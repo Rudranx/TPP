@@ -4,13 +4,20 @@ Example:
     python -m tpp.main
     python -m tpp.main --benchmark-script path/to/benchmark.py
     python -m tpp.main --benchmark python benchmark.py
+    python -m tpp.main --kernel-trace python benchmark.py
 """
 import argparse
 
 from .config import Config
 from .core import TPPSimulator
 from .core.page import PageType
-from .workload import command_for_python_script, generate_synthetic_workload, run_real_workload
+from .workload import (
+    command_for_python_script,
+    generate_synthetic_workload,
+    KernelTraceUnavailable,
+    run_kernel_traced_workload,
+    run_real_workload,
+)
 from .visualization import (
     plot_heat_distribution,
     plot_hit_rate,
@@ -33,6 +40,17 @@ def parse_args():
         "--benchmark",
         nargs=argparse.REMAINDER,
         help="External benchmark command. Put this option last.",
+    )
+    parser.add_argument(
+        "--kernel-trace",
+        nargs=argparse.REMAINDER,
+        help="External command traced through Linux procfs/perf instrumentation. Put this option last.",
+    )
+    parser.add_argument(
+        "--kernel-tracer",
+        choices=("auto", "procfs", "perf"),
+        default="auto",
+        help="Kernel tracing backend for --kernel-trace.",
     )
     parser.add_argument(
         "--sample-interval",
@@ -64,10 +82,28 @@ def main():
     # Create simulator
     sim = TPPSimulator(cfg)
 
-    if args.benchmark_script and args.benchmark:
-        raise SystemExit("Use either --benchmark-script or --benchmark, not both.")
+    active_inputs = sum(1 for value in (args.benchmark_script, args.benchmark, args.kernel_trace) if value)
+    if active_inputs > 1:
+        raise SystemExit("Use only one input mode: --benchmark-script, --benchmark, or --kernel-trace.")
 
-    if args.benchmark_script or args.benchmark:
+    kernel_stats = None
+    if args.kernel_trace:
+        command = args.kernel_trace
+        print(f"Running kernel-traced workload via {args.kernel_tracer}: {' '.join(command)}")
+        try:
+            result = run_kernel_traced_workload(
+                command=command,
+                page_allocator=lambda page_type: allocate_simulated_page(sim, page_type),
+                total_ticks=cfg.TOTAL_TICKS,
+                tracer=args.kernel_tracer,
+                sample_interval_sec=args.sample_interval,
+            )
+        except KernelTraceUnavailable as exc:
+            raise SystemExit(f"Kernel tracing unavailable: {exc}") from exc
+        workload = result.events
+        kernel_stats = result.stats
+        print(f"Captured {len(workload)} kernel-derived access events")
+    elif args.benchmark_script or args.benchmark:
         command = command_for_python_script(args.benchmark_script) if args.benchmark_script else args.benchmark
         print(f"Running benchmark: {' '.join(command)}")
         workload = run_real_workload(
@@ -100,6 +136,13 @@ def main():
     locality = sim.chameleon.locality_summary()
     print(f"  Avg reuse distance: {locality['avg_reuse_distance']:.2f} ticks")
     print(f"  Working set: {locality['working_set_pages']} pages")
+    if kernel_stats:
+        print("  Kernel trace:")
+        print(f"    Source: {kernel_stats.source}")
+        print(f"    Page faults: {kernel_stats.page_faults}")
+        print(f"    Minor faults: {kernel_stats.minor_faults}")
+        print(f"    Major faults: {kernel_stats.major_faults}")
+        print(f"    Cache misses: {kernel_stats.cache_misses}")
 
     # Generate plots (if matplotlib is available)
     try:
