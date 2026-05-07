@@ -18,10 +18,11 @@ py -m tpp.main
 
 The built-in suite includes:
 
-- web service request workload
-- ads/recommendation workload
-- data-structure traversal workload
-- analytics workload
+- web workload with session/cache behavior
+- ads/recommendation workload with embeddings/ranking
+- hash map workload
+- graph traversal workload
+- matrix multiplication workload
 - cache/key-value workload
 
 ```powershell
@@ -61,6 +62,25 @@ memory behavior into simulated TPP page events, and reports:
 - reuse distance
 - working-set size
 - heat distribution
+- heatmap
+- access distribution
+- tier composition
+- latency comparison against all-DRAM and all-CXL baselines
+
+## Demo Workload Files
+
+The repository includes upload-style benchmark files under `tpp/benchmarks/`:
+
+- `web_workload.py`
+- `ads_workload.py`
+- `hashmap_workload.py`
+- `graph_workload.py`
+- `matrix_workload.py`
+- `cache_workload.py`
+
+These mirror common workload classes discussed in tiered-memory evaluations:
+web services, ads/recommendation, key-value cache, graph traversal, hash maps,
+and analytics-style matrix computation.
 
 ## Current Limitation
 

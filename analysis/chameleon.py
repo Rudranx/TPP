@@ -12,6 +12,7 @@ class ChameleonTracker:
         self.interval_ticks = interval_ticks
         self.current_interval = 0
         self.page_bitmaps = defaultdict(int)
+        self.page_access_counts = defaultdict(int)
         self.last_access_tick_by_page = {}
         self.reuse_distance_series = []
         self.working_set_series = []
@@ -24,6 +25,7 @@ class ChameleonTracker:
             self._next_interval()
 
         self.page_bitmaps[page.id] |= 1
+        self.page_access_counts[page.id] += 1
         self._interval_pages.add(page.id)
 
         previous_tick = self.last_access_tick_by_page.get(page.id)
@@ -66,4 +68,31 @@ class ChameleonTracker:
             "max_reuse_distance": max(distances),
             "working_set_pages": len(set(self._recent_pages)),
             "unique_pages": len(self.page_bitmaps),
+        }
+
+    def locality_classification(self):
+        summary = self.locality_summary()
+        avg_reuse = summary["avg_reuse_distance"]
+        working_set = summary["working_set_pages"]
+        unique_pages = max(1, summary["unique_pages"])
+        working_set_stability = working_set / unique_pages
+
+        if avg_reuse <= self.interval_ticks:
+            temporal = "HIGH"
+        elif avg_reuse <= self.interval_ticks * 5:
+            temporal = "MODERATE"
+        else:
+            temporal = "LOW"
+
+        if working_set_stability <= 0.35:
+            spatial = "HIGH"
+        elif working_set_stability <= 0.70:
+            spatial = "MODERATE"
+        else:
+            spatial = "LOW"
+
+        return {
+            "working_set_stability": working_set_stability,
+            "temporal_locality": temporal,
+            "spatial_locality": spatial,
         }

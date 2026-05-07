@@ -1,4 +1,5 @@
 import html
+import math
 
 import matplotlib.pyplot as plt
 
@@ -94,9 +95,65 @@ def plot_heat_distribution(pages, title="Page Heat Distribution", save_path=None
     _save_or_show(save_path)
 
 
+def plot_heatmap(pages, title="Page Heatmap", save_path=None):
+    heats = [page.heat for page in pages]
+    if not heats:
+        heats = [0]
+    width = max(1, math.ceil(math.sqrt(len(heats))))
+    padded = heats + [0] * ((width * width) - len(heats))
+    grid = [padded[index:index + width] for index in range(0, len(padded), width)]
+    plt.figure()
+    plt.imshow(grid, cmap="inferno", aspect="auto")
+    plt.colorbar(label="Heat")
+    plt.title(title)
+    plt.xlabel("Page bucket")
+    plt.ylabel("Page bucket")
+    _save_or_show(save_path)
+
+
+def plot_access_distribution(chameleon, title="Access Distribution", save_path=None):
+    counts = sorted(chameleon.page_access_counts.values(), reverse=True)
+    plt.figure()
+    plt.plot(range(1, len(counts) + 1), counts)
+    plt.xlabel("Page rank")
+    plt.ylabel("Access count")
+    plt.title(title)
+    plt.grid(True)
+    _save_or_show(save_path)
+
+
+def plot_tier_composition(sim, title="Final Tier Composition", save_path=None):
+    plt.figure()
+    plt.pie(
+        [sim.dram.used_pages, sim.cxl.used_pages],
+        labels=["DRAM", "CXL"],
+        autopct="%1.1f%%",
+        startangle=90,
+    )
+    plt.title(title)
+    _save_or_show(save_path)
+
+
+def plot_latency_comparison(sim, title="Latency Comparison", save_path=None):
+    total = max(1, sim.metrics.total_accesses)
+    all_dram = sim.config.DRAM_LATENCY_NS
+    all_cxl = sim.config.CXL_LATENCY_NS
+    tpp = sim.metrics.final_avg_latency_ns
+    plt.figure()
+    plt.bar(["All DRAM", "TPP", "All CXL"], [all_dram, tpp, all_cxl])
+    plt.ylabel("Average latency (ns)")
+    plt.title(title)
+    plt.grid(axis="y")
+    for index, value in enumerate([all_dram, tpp, all_cxl]):
+        plt.text(index, value, f"{value:.1f}", ha="center", va="bottom")
+    _save_or_show(save_path)
+
+
 def write_html_report(sim, output_path="tpp_report.html"):
     locality = sim.chameleon.locality_summary()
+    classes = sim.chameleon.locality_classification()
     rows = {
+        "Total accesses": sim.metrics.total_accesses,
         "DRAM accesses": sim.metrics.dram_accesses,
         "CXL accesses": sim.metrics.cxl_accesses,
         "DRAM hit rate": f"{sim.metrics.final_hit_rate:.2%}",
@@ -109,6 +166,9 @@ def write_html_report(sim, output_path="tpp_report.html"):
         "Max reuse distance": locality["max_reuse_distance"],
         "Working set pages": locality["working_set_pages"],
         "Unique touched pages": locality["unique_pages"],
+        "Working set stability": f"{classes['working_set_stability']:.2f}",
+        "Temporal locality": classes["temporal_locality"],
+        "Spatial locality": classes["spatial_locality"],
     }
     table = "\n".join(
         f"<tr><th>{html.escape(str(key))}</th><td>{html.escape(str(value))}</td></tr>"
@@ -138,6 +198,10 @@ def write_html_report(sim, output_path="tpp_report.html"):
   <img src="reuse_distance.png" alt="Reuse distance">
   <img src="working_set.png" alt="Working set">
   <img src="heat_distribution.png" alt="Heat distribution">
+  <img src="heatmap.png" alt="Heatmap">
+  <img src="access_distribution.png" alt="Access distribution">
+  <img src="tier_composition.png" alt="Tier composition">
+  <img src="latency_comparison.png" alt="Latency comparison">
 </body>
 </html>
 """
