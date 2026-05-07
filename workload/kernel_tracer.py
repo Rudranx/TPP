@@ -6,11 +6,11 @@ It supports two practical sources:
 
 * /proc/<pid>/stat sampling for minor/major fault deltas while a workload runs.
 * perf stat wrapping for aggregate kernel counters when Linux perf is available.
+* perf mem sampling for hardware load/store memory address samples.
 
-Neither backend exposes exact hardware page-reference streams on its own. They
-produce simulator traces from kernel-observed fault/counter activity, which is a
-closer workload signal than RSS growth and can be replaced later by eBPF/perf
-mem sampling without changing the simulator interface.
+The perf-mem backend is sampled rather than exhaustive, but it is the first
+hardware-address-oriented path and maps sampled memory addresses to simulated
+pages.
 """
 import os
 import platform
@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import time
+import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Optional
@@ -35,6 +36,8 @@ class KernelTraceStats:
     major_faults: int = 0
     page_faults: int = 0
     cache_misses: int = 0
+    memory_samples: int = 0
+    unique_sampled_pages: int = 0
     raw_perf_counters: dict[str, int] = field(default_factory=dict)
 
 
@@ -170,6 +173,82 @@ class PerfStatTraceRunner:
         return KernelTraceResult(events=events, stats=stats)
 
 
+class PerfMemTraceRunner:
+    def __init__(
+        self,
+        command: Sequence[str],
+        page_allocator: Callable[[PageType], Optional[Page]],
+        total_ticks: int,
+    ):
+        self.command = list(command)
+        self.page_allocator = page_allocator
+        self.total_ticks = total_ticks
+
+    def execute_and_trace(self) -> KernelTraceResult:
+        _require_linux_proc()
+        if shutil.which("perf") is None:
+            raise KernelTraceUnavailable("Linux perf is not installed or not on PATH")
+        if not self.command:
+            raise ValueError("Kernel trace command cannot be empty")
+
+        with tempfile.TemporaryDirectory(prefix="tpp-perf-mem-") as trace_dir:
+            perf_data = os.path.join(trace_dir, "perf.data")
+            record_command = [
+                "perf",
+                "mem",
+                "record",
+                "-o",
+                perf_data,
+                "--",
+                *self.command,
+            ]
+            record = subprocess.run(
+                record_command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+            if record.returncode != 0:
+                raise RuntimeError(
+                    "perf mem record failed with exit code "
+                    f"{record.returncode}\n{record.stderr}"
+                )
+
+            script = subprocess.run(
+                [
+                    "perf",
+                    "script",
+                    "-i",
+                    perf_data,
+                    "-F",
+                    "time,event,addr",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+            if script.returncode != 0:
+                raise RuntimeError(
+                    "perf script failed with exit code "
+                    f"{script.returncode}\n{script.stderr}"
+                )
+
+        sampled_addresses = _parse_perf_script_addresses(script.stdout)
+        events, unique_pages = _events_from_sampled_addresses(
+            sampled_addresses=sampled_addresses,
+            total_ticks=self.total_ticks,
+            page_allocator=self.page_allocator,
+        )
+        stats = KernelTraceStats(
+            source="perf-mem",
+            memory_samples=len(sampled_addresses),
+            unique_sampled_pages=unique_pages,
+        )
+        return KernelTraceResult(events=events, stats=stats)
+
+
 def command_for_python_script(script_path: str) -> list[str]:
     return [sys.executable, script_path]
 
@@ -181,8 +260,15 @@ def run_kernel_traced_workload(
     tracer: str = "auto",
     sample_interval_sec: float = 0.05,
 ) -> KernelTraceResult:
-    if tracer not in {"auto", "procfs", "perf"}:
-        raise ValueError("tracer must be one of: auto, procfs, perf")
+    if tracer not in {"auto", "procfs", "perf", "perf-mem"}:
+        raise ValueError("tracer must be one of: auto, procfs, perf, perf-mem")
+
+    if tracer == "perf-mem":
+        return PerfMemTraceRunner(
+            command=command,
+            page_allocator=page_allocator,
+            total_ticks=total_ticks,
+        ).execute_and_trace()
 
     if tracer in {"auto", "procfs"}:
         try:
@@ -251,6 +337,46 @@ def _parse_perf_stat(stderr: str) -> KernelTraceStats:
         elif event_name == "cache-misses":
             stats.cache_misses = value
     return stats
+
+
+def _parse_perf_script_addresses(stdout: str) -> list[int]:
+    addresses = []
+    for line in stdout.splitlines():
+        for token in line.replace(",", " ").split():
+            if not token.startswith("0x"):
+                continue
+            try:
+                address = int(token, 16)
+            except ValueError:
+                continue
+            if address > 0:
+                addresses.append(address)
+                break
+    return addresses
+
+
+def _events_from_sampled_addresses(
+    sampled_addresses: Sequence[int],
+    total_ticks: int,
+    page_allocator: Callable[[PageType], Optional[Page]],
+) -> tuple[list[tuple[int, Page]], int]:
+    if not sampled_addresses:
+        return [], 0
+
+    page_by_address: dict[int, Page] = {}
+    events = []
+    event_count = len(sampled_addresses)
+    for index, address in enumerate(sampled_addresses):
+        page_key = address // 4096
+        page = page_by_address.get(page_key)
+        if page is None:
+            page = page_allocator(PageType.ANON)
+            if page is None:
+                continue
+            page_by_address[page_key] = page
+        tick = int(index * max(total_ticks - 1, 1) / max(event_count - 1, 1))
+        events.append((tick, page))
+    return events, len(page_by_address)
 
 
 def _events_from_aggregate_faults(

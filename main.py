@@ -4,7 +4,7 @@ Example:
     python -m tpp.main
     python -m tpp.main --benchmark-script path/to/benchmark.py
     python -m tpp.main --benchmark python benchmark.py
-    python -m tpp.main --kernel-trace python benchmark.py
+    python -m tpp.main --kernel-tracer perf-mem --kernel-trace python benchmark.py
 """
 import argparse
 
@@ -48,7 +48,7 @@ def parse_args():
     )
     parser.add_argument(
         "--kernel-tracer",
-        choices=("auto", "procfs", "perf"),
+        choices=("auto", "procfs", "perf", "perf-mem"),
         default="auto",
         help="Kernel tracing backend for --kernel-trace.",
     )
@@ -143,6 +143,8 @@ def main():
         print(f"    Minor faults: {kernel_stats.minor_faults}")
         print(f"    Major faults: {kernel_stats.major_faults}")
         print(f"    Cache misses: {kernel_stats.cache_misses}")
+        print(f"    Memory samples: {kernel_stats.memory_samples}")
+        print(f"    Unique sampled pages: {kernel_stats.unique_sampled_pages}")
 
     # Generate plots (if matplotlib is available)
     try:
