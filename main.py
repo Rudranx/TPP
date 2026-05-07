@@ -4,9 +4,13 @@ Example:
     python -m tpp.main
     python -m tpp.main --benchmark-script path/to/benchmark.py
     python -m tpp.main --benchmark python benchmark.py
+    python -m tpp.main --benchmark-suite
+    python -m tpp.main --workload-file path/to/uploaded.py
 """
 import argparse
+from pathlib import Path
 
+from .benchmark_suite import run_benchmark_suite, run_default_suite
 from .config import Config
 from .core import TPPSimulator
 from .core.page import PageType
@@ -35,6 +39,22 @@ def parse_args():
         help="External benchmark command. Put this option last.",
     )
     parser.add_argument(
+        "--benchmark-suite",
+        action="store_true",
+        help="Run built-in benchmark suite: web, ads, data structures, analytics, cache.",
+    )
+    parser.add_argument(
+        "--workload-file",
+        action="append",
+        default=[],
+        help="User-provided Python workload file. Can be supplied multiple times.",
+    )
+    parser.add_argument(
+        "--results-dir",
+        default="benchmark_results",
+        help="Directory for benchmark suite outputs.",
+    )
+    parser.add_argument(
         "--sample-interval",
         type=float,
         default=0.1,
@@ -55,6 +75,36 @@ def allocate_simulated_page(sim: TPPSimulator, page_type: PageType):
 
 def main():
     args = parse_args()
+
+    if args.benchmark_suite or args.workload_file:
+        active_inputs = sum(1 for value in (args.benchmark_script, args.benchmark) if value)
+        if active_inputs:
+            raise SystemExit("Use benchmark suite/workload files separately from --benchmark-script or --benchmark.")
+        results_dir = Path(args.results_dir)
+        if args.benchmark_suite:
+            print("Running built-in benchmark suite")
+            results = run_default_suite(
+                results_dir=results_dir,
+                sample_interval_sec=args.sample_interval,
+                accesses_per_sample=args.accesses_per_sample,
+            )
+        else:
+            scripts = [Path(path) for path in args.workload_file]
+            print(f"Running {len(scripts)} uploaded workload file(s)")
+            results = run_benchmark_suite(
+                scripts=scripts,
+                results_dir=results_dir,
+                sample_interval_sec=args.sample_interval,
+                accesses_per_sample=args.accesses_per_sample,
+            )
+        print(f"Benchmark outputs saved under {results_dir}")
+        for result in results:
+            print(
+                f"  {result.name}: hit={result.hit_rate:.2%}, "
+                f"latency={result.avg_latency_ns:.2f} ns, events={result.events}"
+            )
+        return
+
     cfg = Config()
     print("=== TPP Simulator ===")
     print(f"DRAM capacity: {cfg.DRAM_CAPACITY_PAGES} pages, CXL: {cfg.CXL_CAPACITY_PAGES} pages")
